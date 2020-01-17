@@ -1,13 +1,12 @@
 #include "arduino_secrets.h"
 #include "ThingSpeak.h"
 #include "WiFiEsp.h"
-//#include "claves.h"
 #include <DHT.h>
-//#include
 
 char ssid[] = SECRET_SSID;   // your network SSID (name)
 char pass[] = SECRET_PASS;  // your network password
 int keyIndex = 0;            // your network key Index number (needed only for WEP)
+
 WiFiEspClient  client;
 
 #define DHTPIN 5  // Conecte el pin de datos al pin 5 del Arduino
@@ -18,14 +17,27 @@ int tiempo = 0;
 int tiempo2 = 0;
 int dt = 180; // 30 min de espera sin conexión antes de reiniciar todo.
 
-// Emulate Serial1 on pins 6/7 if not present
+// Emulate Serial1 on pins 2/3 if not present
 #ifndef HAVE_HWSERIAL1
 #include "SoftwareSerial.h"
 SoftwareSerial Serial1(2, 3); // RX, TX
+SoftwareSerial OpenLog(6, 7);
+#define OL_BAUDRATE 9600
 #define ESP_BAUDRATE  19200
+#define HS_BAUDRATE 9600
 #else
 #define ESP_BAUDRATE  115200
 #endif
+
+// timeout para configuracion del openlog
+#define TIMEOUT_LOG 10000
+#define TIMEOUT_SD 2200000
+
+#define RESET_OL_PIN 4
+#define EXIT_CHAR 36
+
+char fileName[18];
+char buff[18];
 
 unsigned long myChannelNumber = SECRET_CH_ID;
 const char * myWriteAPIKey = SECRET_WRITE_APIKEY;
@@ -87,17 +99,18 @@ void ProcessSerialData()
 }
 
 void setup() {
+  pinMode(RESET_OL_PIN, OUTPUT);
+
   dht.begin();
   Pm25 = 0;
   Pm10 = 0;
   //Initialize serial and wait for port to open
-  Serial.begin(9600);  // Initialize serial
-
-  // initialize serial for ESP module
-  setEspBaudRate(ESP_BAUDRATE);
+  Serial.begin(HS_BAUDRATE);  // initialize Hardware serial
+  OpenLog.begin(OL_BAUDRATE); // initialize OpenLog software serial
+  setEspBaudRate(ESP_BAUDRATE); // initialize ESP module software serial
 
   while (!Serial) {
-    ; // wait for serial port to connect. Needed for Leonardo native USB port only
+    ; // wait for serial port to connect.
   }
 
   Serial.print(F("Searching for ESP8266..."));
@@ -113,6 +126,25 @@ void setup() {
   Serial.println(F("found it!"));
 
   ThingSpeak.begin(client);  // Initialize ThingSpeak
+
+  //Reset OpenLog
+  digitalWrite(resetOpenLog, LOW);
+  delay(100);
+  digitalWrite(resetOpenLog, HIGH);
+
+  long t = millis();
+  while (millis() - t < TIMEOUT_LOG) {
+    Serial.print(".");
+    if (OpenLog.available())
+      if (OpenLog.read() == '<') {
+        Serial.println("Ready to receive info");
+        break;
+      }
+    delay(500);
+  }
+
+  Serial.println("Setting up OpenLog command mode");
+  openlog_command_mode();
 }
 
 void loop() {
@@ -144,6 +176,8 @@ void loop() {
   ThingSpeak.setField(3, float(Pm25 / 10));
   ThingSpeak.setField(4, float(Pm10 / 10));
 
+  
+
   // write to the ThingSpeak channel
   int x = ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
   if (x == 200) {
@@ -160,6 +194,22 @@ void loop() {
 
   delay(20000); // Wait 20 seconds to update the channel again
 }
+
+void openlog_command_mode() {
+  OpenLog.write(EXIT_CHAR);//36 -> '$'
+  OpenLog.write(EXIT_CHAR);
+  OpenLog.write(EXIT_CHAR);
+  int count = 0;
+  while (count < TIMEOUT_SD) { // TIMEOUT_SD lo definií en 2200000 para evitar que se quede pegado ahí para siempre si es que hay cualquier error en la SD
+    if (OpenLog.available()) {
+      if (OpenLog.read() == '>') {
+        break;
+      }
+    }
+    count++;
+  }
+}
+
 
 // This function attempts to set the ESP8266 baudrate. Boards with additional hardware serial ports
 // can use 115200, otherwise software serial is limited to 19200.
